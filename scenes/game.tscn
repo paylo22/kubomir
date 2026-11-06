@@ -1,0 +1,46 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://scripts/game_session.gd" id="1_session"]
+[ext_resource type="Script" path="res://scripts/core/world_server.gd" id="2_server"]
+[ext_resource type="Script" path="res://scripts/view/world_view.gd" id="3_view"]
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="4_player"]
+[ext_resource type="Script" path="res://scripts/ui/hud.gd" id="5_hud"]
+[ext_resource type="Script" path="res://scripts/ui/pause_menu.gd" id="6_pause"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.32, 0.52, 0.88, 1)
+sky_horizon_color = Color(0.72, 0.82, 0.95, 1)
+ground_bottom_color = Color(0.72, 0.82, 0.95, 1)
+ground_horizon_color = Color(0.72, 0.82, 0.95, 1)
+
+[sub_resource type="Sky" id="Sky_main"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 2
+sky = SubResource("Sky_main")
+ambient_light_source = 2
+ambient_light_color = Color(1, 1, 1, 1)
+fog_enabled = true
+fog_light_color = Color(0.72, 0.82, 0.95, 1)
+fog_density = 0.008
+
+[node name="GameScene" type="Node3D"]
+script = ExtResource("1_session")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="WorldServer" type="Node" parent="."]
+script = ExtResource("2_server")
+
+[node name="WorldView" type="Node3D" parent="."]
+script = ExtResource("3_view")
+
+[node name="Player" parent="." instance=ExtResource("4_player")]
+
+[node name="HUD" type="CanvasLayer" parent="."]
+script = ExtResource("5_hud")
+
+[node name="PauseMenu" type="CanvasLayer" parent="."]
+script = ExtResource("6_pause")
