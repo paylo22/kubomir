@@ -6,16 +6,17 @@ extends Node
 const SETTINGS_PATH := "user://settings.cfg"
 const MENU_SCENE := "res://scenes/menu.tscn"
 const GAME_SCENE := "res://scenes/game.tscn"
-const VERSION := "0.2"
+const VERSION := "0.3"
 
-## Размеры мира для меню «Новый мир»: название -> сколько чанков (16 блоков) по стороне.
+## Размеры архипелага для меню «Новый мир»: название -> сколько чанков (16 блоков) по стороне.
 const WORLD_SIZES := [
-	{"name": "Маленький", "chunks": 4},
-	{"name": "Средний", "chunks": 6},
-	{"name": "Большой", "chunks": 8},
+	{"name": "Маленький", "chunks": 8},
+	{"name": "Средний", "chunks": 16},
+	{"name": "Большой", "chunks": 24},
 ]
 
 var settings := {
+	"view_distance": 6,
 	"touch_sensitivity": 1.0,
 	"mouse_sensitivity": 1.0,
 	"auto_jump": true,

@@ -17,14 +17,13 @@ signal saved(auto: bool)
 signal block_changed(pos: Vector3i, new_id: int, old_id: int)
 signal block_damaged(pos: Vector3i, damage: float)
 
-const GAME_VERSION := "0.2"
+const GAME_VERSION := "0.3"
 
 @export_group("Генерация нового мира")
 @export var world_height := 64
-@export var base_height := 24     ## средняя высота земли
-@export var sand_level := 20      ## ниже этой высоты вместо травы песок
+@export var sea_level := 22         ## до этой высоты — вода
 @export var caves_enabled := true
-@export var trees_chance := 0.012 ## шанс дерева на каждом блоке травы
+@export var trees_multiplier := 1.0 ## 2.0 — вдвое больше деревьев, 0 — без деревьев
 
 @export_group("Правила")
 @export var autosave_interval := 60.0 ## секунд между автосохранениями
@@ -42,6 +41,8 @@ var _meta := {}
 var _players := {}       # номер игрока -> его состояние (позиция, поворот, ...)
 var _saved_players := {} # состояния из файла (для тех, кто ещё не зашёл)
 var _task_id := -1
+var _group_id := -1
+var _gen_stage := 0 # 0 — не генерируем, 1 — высоты, 2 — блоки, 3 — руда и деревья
 var _generator: WorldGenerator
 var _load_result := {}
 var _autosave_timer := 0.0
@@ -63,12 +64,15 @@ func create_world(id: String, title: String, seed_value: int, size_chunks: int) 
 	_generator.world_seed = seed_value
 	_generator.size_chunks = size_chunks
 	_generator.height = world_height
-	_generator.base_height = base_height
-	_generator.sand_level = sand_level
+	_generator.sea_level = sea_level
 	_generator.caves_enabled = caves_enabled
-	_generator.trees_chance = trees_chance
-	status_text = "Создаём рельеф…"
-	_task_id = WorkerThreadPool.add_task(_generator.generate.bind(data), false, "Генерация мира")
+	_generator.trees_multiplier = trees_multiplier
+	_generator.prepare(data)
+	_meta["islands"] = _generator.islands.size()
+	# Шаг 1: высоты — все ряды мира параллельно, на всех ядрах
+	status_text = "Поднимаем острова из океана…"
+	_gen_stage = 1
+	_group_id = WorkerThreadPool.add_group_task(_generator.heights_row, data.size_z, -1, false, "Высоты")
 
 
 ## Загрузить сохранённый мир (чтение и распаковка — тоже в фоне).
@@ -95,10 +99,10 @@ func _load_in_thread(id: String, target: WorldData, result: Dictionary) -> void:
 
 
 func _process(delta: float) -> void:
+	if _gen_stage > 0:
+		_process_generation()
+		return
 	if _task_id >= 0:
-		if _generator:
-			progress = _generator.progress
-			status_text = _generator.stage_text
 		if WorkerThreadPool.is_task_completed(_task_id):
 			WorkerThreadPool.wait_for_task_completion(_task_id)
 			_task_id = -1
@@ -109,6 +113,43 @@ func _process(delta: float) -> void:
 		_autosave_timer += delta
 		if _autosave_timer >= autosave_interval:
 			save_world(true)
+
+
+## Генерация идёт шагами; каждый шаг — фоновое задание. Здесь следим и запускаем следующий.
+func _process_generation() -> void:
+	match _gen_stage:
+		1:
+			progress = 0.3 * _generator.rows_progress(1)
+			if WorkerThreadPool.is_group_task_completed(_group_id):
+				WorkerThreadPool.wait_for_group_task_completion(_group_id)
+				status_text = "Насыпаем землю, камень и песок…"
+				_gen_stage = 2
+				_group_id = WorkerThreadPool.add_group_task(_generator.fill_row, data.size_z, -1, false, "Блоки")
+		2:
+			progress = 0.3 + 0.5 * _generator.rows_progress(2)
+			if WorkerThreadPool.is_group_task_completed(_group_id):
+				WorkerThreadPool.wait_for_group_task_completion(_group_id)
+				_group_id = -1
+				_gen_stage = 3
+				_task_id = WorkerThreadPool.add_task(_generator.finish, false, "Руда и деревья")
+		3:
+			progress = 0.8 + 0.2 * _generator.finish_progress
+			status_text = _generator.stage_text
+			if WorkerThreadPool.is_task_completed(_task_id):
+				WorkerThreadPool.wait_for_task_completion(_task_id)
+				_task_id = -1
+				_gen_stage = 0
+				_finish_loading()
+
+
+## Дождаться фоновых заданий (например, если игрок вышел из мира во время загрузки).
+func _exit_tree() -> void:
+	if _group_id >= 0:
+		WorkerThreadPool.wait_for_group_task_completion(_group_id)
+		_group_id = -1
+	if _task_id >= 0:
+		WorkerThreadPool.wait_for_task_completion(_task_id)
+		_task_id = -1
 
 
 func _finish_loading() -> void:
@@ -145,6 +186,7 @@ func save_world(auto := false) -> bool:
 		return false
 	_meta["last_played"] = int(Time.get_unix_time_from_system())
 	_meta["name"] = world_name
+	_meta["game_version"] = GAME_VERSION
 	SaveFiles.write_meta(world_id, _meta)
 	saved.emit(auto)
 	return true
@@ -208,8 +250,10 @@ func _cmd_hit_block(player_id: int, cmd: Dictionary) -> void:
 	dmg *= Blocks.damage_multiplier(id, damage_type)
 	var total := data.get_damage(pos) + dmg
 	if total >= Blocks.get_hp(id):
-		data.set_block(pos.x, pos.y, pos.z, Blocks.AIR) # блок разрушен
-		block_changed.emit(pos, Blocks.AIR, id)
+		# Блок разрушен. Если рядом вода — она заливает освободившееся место.
+		var new_id := Blocks.WATER if _touches_water(pos) else Blocks.AIR
+		data.set_block(pos.x, pos.y, pos.z, new_id)
+		block_changed.emit(pos, new_id, id)
 	else:
 		data.set_damage(pos, total) # трещины — блок помнит урон
 		block_damaged.emit(pos, total)
@@ -220,7 +264,10 @@ func _cmd_place_block(player_id: int, cmd: Dictionary) -> void:
 	var block := int(cmd.get("block", Blocks.AIR))
 	if not (pos is Vector3i) or not Blocks.is_placeable(block):
 		return
-	if not data.is_inside(pos.x, pos.y, pos.z) or data.get_block(pos.x, pos.y, pos.z) != Blocks.AIR:
+	if not data.is_inside(pos.x, pos.y, pos.z):
+		return
+	var current := data.get_block(pos.x, pos.y, pos.z)
+	if current != Blocks.AIR and current != Blocks.WATER: # ставить можно в воздух и в воду
 		return
 	if not _can_reach(player_id, pos):
 		return
@@ -231,6 +278,15 @@ func _cmd_place_block(player_id: int, cmd: Dictionary) -> void:
 			return
 	var old := data.set_block(pos.x, pos.y, pos.z, block)
 	block_changed.emit(pos, block, old)
+
+
+## Есть ли вода сбоку или сверху от блока.
+func _touches_water(pos: Vector3i) -> bool:
+	for d in [Vector3i(1, 0, 0), Vector3i(-1, 0, 0), Vector3i(0, 0, 1), Vector3i(0, 0, -1), Vector3i(0, 1, 0)]:
+		var p: Vector3i = pos + d
+		if data.get_block(p.x, p.y, p.z) == Blocks.WATER:
+			return true
+	return false
 
 
 func _can_reach(player_id: int, pos: Vector3i) -> bool:

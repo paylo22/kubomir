@@ -20,6 +20,8 @@ enum {
 	COAL_ORE,
 	IRON_ORE,
 	BEDROCK,
+	WATER,
+	GRAVEL,
 	COUNT, # не блок, просто количество типов
 }
 
@@ -38,6 +40,8 @@ enum {
 	T_COAL,
 	T_IRON,
 	T_BEDROCK,
+	T_WATER,
+	T_GRAVEL,
 	T_COUNT,
 }
 
@@ -54,6 +58,8 @@ const NAMES := {
 	COAL_ORE: "Угольная руда",
 	IRON_ORE: "Железная руда",
 	BEDROCK: "Коренная порода",
+	WATER: "Вода",
+	GRAVEL: "Гравий",
 }
 
 ## Прочность блока: сколько урона он выдерживает. -1 = неразрушимый.
@@ -71,6 +77,8 @@ const HP := {
 	COAL_ORE: 36,
 	IRON_ORE: 42,
 	BEDROCK: -1,
+	WATER: -1,
+	GRAVEL: 6,
 }
 
 ## Множитель входящего урона по типам (1.0 = обычный урон, 0.5 = вдвое меньше).
@@ -82,6 +90,7 @@ const DAMAGE_MULTIPLIER := {
 	GRASS: {Damage.BULLET: 0.6, Damage.EXPLOSION: 1.2},
 	DIRT: {Damage.BULLET: 0.6, Damage.EXPLOSION: 1.2},
 	SAND: {Damage.BULLET: 0.6, Damage.EXPLOSION: 1.2},
+	GRAVEL: {Damage.BULLET: 0.6, Damage.EXPLOSION: 1.2},
 	STONE: {Damage.BULLET: 0.4, Damage.EXPLOSION: 0.8},
 	COBBLESTONE: {Damage.BULLET: 0.5, Damage.EXPLOSION: 0.8},
 }
@@ -99,16 +108,22 @@ const TILES := {
 	COAL_ORE: [T_COAL, T_COAL, T_COAL],
 	IRON_ORE: [T_IRON, T_IRON, T_IRON],
 	BEDROCK: [T_BEDROCK, T_BEDROCK, T_BEDROCK],
+	WATER: [T_WATER, T_WATER, T_WATER],
+	GRAVEL: [T_GRAVEL, T_GRAVEL, T_GRAVEL],
 }
 
-# Сквозь эти блоки видно соседей (у листвы есть дырочки).
-const TRANSPARENT := [AIR, LEAVES]
+# Сквозь эти блоки видно соседей (у листвы есть дырочки, вода прозрачная).
+const TRANSPARENT := [AIR, LEAVES, WATER]
+# Сквозь эти блоки можно проходить (по ним нельзя ходить, их нельзя «выделить» прицелом).
+const PASSABLE := [AIR, WATER]
 
 # Быстрые таблицы-«шпаргалки» для построения сетки (заполняются один раз при запуске):
 ## 1, если блок прозрачный, иначе 0. Индекс — номер блока.
 static var TRANSPARENT_LUT := _build_transparent_lut()
 ## Номер текстуры: [номер_блока * 3 + грань], грань: 0 = верх, 1 = бок, 2 = низ.
 static var TILE_LUT := _build_tile_lut()
+## 1, если блок твёрдый (на нём можно стоять, его можно ударить), иначе 0.
+static var SOLID_LUT := _build_solid_lut()
 
 
 static func get_block_name(id: int) -> String:
@@ -125,7 +140,11 @@ static func is_breakable(id: int) -> bool:
 
 ## Можно ли ставить этот блок руками.
 static func is_placeable(id: int) -> bool:
-	return id > AIR and id < COUNT and id != BEDROCK
+	return id > AIR and id < COUNT and id != BEDROCK and id != WATER
+
+
+static func is_solid(id: int) -> bool:
+	return SOLID_LUT[id] == 1
 
 
 static func damage_multiplier(id: int, damage_type: int) -> float:
@@ -149,6 +168,15 @@ static func _build_transparent_lut() -> PackedByteArray:
 	lut.fill(0)
 	for id in TRANSPARENT:
 		lut[id] = 1
+	return lut
+
+
+static func _build_solid_lut() -> PackedByteArray:
+	var lut := PackedByteArray()
+	lut.resize(256)
+	lut.fill(1)
+	for id in PASSABLE:
+		lut[id] = 0
 	return lut
 
 

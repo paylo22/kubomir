@@ -30,6 +30,9 @@ static func create_atlas_image() -> Image:
 	_ore(img, Blocks.T_COAL, Color(0.12, 0.12, 0.12), rng)
 	_ore(img, Blocks.T_IRON, Color(0.85, 0.65, 0.50), rng)
 	_bedrock(img, rng)
+	_water(img, rng)
+	_noise(img, Blocks.T_GRAVEL, Color(0.50, 0.47, 0.45), 0.04, rng)
+	_pebbles(img, Blocks.T_GRAVEL, rng)
 	return img
 
 
@@ -218,3 +221,28 @@ static func _bedrock(img: Image, rng: RandomNumberGenerator) -> void:
 		for x in TILE_SIZE:
 			var v := rng.randf_range(0.12, 0.42)
 			_px(img, Blocks.T_BEDROCK, x, y, Color(v, v, v))
+
+
+static func _water(img: Image, rng: RandomNumberGenerator) -> void:
+	for y in TILE_SIZE:
+		for x in TILE_SIZE:
+			var wave := sin((x + y * 0.5) * 0.9) * 0.03
+			_px(img, Blocks.T_WATER, x, y, _shade(Color(0.22, 0.45, 0.78), wave + rng.randf_range(-0.025, 0.025)))
+	# светлые блики на поверхности
+	for i in 10:
+		var x := rng.randi_range(0, 13)
+		var y := rng.randi_range(0, 15)
+		for k in rng.randi_range(2, 3):
+			_px(img, Blocks.T_WATER, x + k, y, Color(0.45, 0.66, 0.92))
+
+
+static func _pebbles(img: Image, tile: int, rng: RandomNumberGenerator) -> void:
+	for i in 26:
+		var cx := rng.randi_range(0, 14)
+		var cy := rng.randi_range(0, 14)
+		var tone := rng.randf_range(-0.16, 0.12)
+		var c := _shade(Color(0.52, 0.49, 0.47), tone)
+		_px(img, tile, cx, cy, c)
+		_px(img, tile, cx + 1, cy, c)
+		_px(img, tile, cx, cy + 1, _shade(c, -0.06))
+		_px(img, tile, cx + 1, cy + 1, _shade(c, -0.1))

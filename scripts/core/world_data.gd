@@ -8,12 +8,16 @@ extends RefCounted
 ## так чанку удобно копировать целые столбцы за одну операцию.
 
 const CHUNK_SIZE := 16
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3
 
 var size_x := 0
 var size_z := 0
 var height := 0
 var world_seed := 0
+## Уровень моря: до этой высоты (включительно) в океане стоит вода.
+var sea_level := 0
+## Где появляются новые игроки (выбирает генератор). Vector3.ZERO — «не задано».
+var spawn_point := Vector3.ZERO
 var blocks := PackedByteArray()
 ## Для каждого столбца — высота самого верхнего непрозрачного блока (-1, если нет).
 ## По ней понимаем, видно ли небо: всё, что ниже, — в тени.
@@ -65,9 +69,9 @@ func get_block(x: int, y: int, z: int) -> int:
 	return blocks[index_of(x, y, z)]
 
 
-## Твёрдый = в нём нельзя стоять (всё, кроме воздуха).
+## Твёрдый = на нём можно стоять (всё, кроме воздуха и воды).
 func is_solid(x: int, y: int, z: int) -> bool:
-	return get_block(x, y, z) != Blocks.AIR
+	return Blocks.SOLID_LUT[get_block(x, y, z)] == 1
 
 
 ## Поставить блок. Возвращает, какой блок был раньше.
@@ -128,11 +132,16 @@ func recompute_all_columns() -> void:
 			update_column(x, z)
 
 
-## Точка появления игрока: ближайшее к центру место на земле (не на дереве).
+## Точка появления игрока. Если генератор выбрал место — оно, иначе ищем землю у центра.
 func get_spawn_position() -> Vector3:
-	var cx := int(size_x / 2.0)
-	var cz := int(size_z / 2.0)
-	for r in 24: # обходим квадраты всё большего размера вокруг центра
+	if spawn_point != Vector3.ZERO:
+		return spawn_point
+	return find_ground_near(int(size_x / 2.0), int(size_z / 2.0), 24)
+
+
+## Ближайшее к (cx, cz) место на земле: трава, песок или земля, не на дереве и не в воде.
+func find_ground_near(cx: int, cz: int, max_radius: int) -> Vector3:
+	for r in max_radius: # обходим квадраты всё большего размера вокруг центра
 		for dz in range(-r, r + 1):
 			for dx in range(-r, r + 1):
 				if maxi(absi(dx), absi(dz)) != r:
@@ -174,7 +183,7 @@ func raycast(origin: Vector3, direction: Vector3, max_distance: float) -> Dictio
 	var normal := Vector3i.ZERO
 	var t := 0.0
 	while t <= max_distance:
-		if get_block(cell.x, cell.y, cell.z) != Blocks.AIR:
+		if Blocks.SOLID_LUT[get_block(cell.x, cell.y, cell.z)] == 1: # воздух и воду пролетаем насквозь
 			return {"hit": true, "pos": cell, "normal": normal}
 		if t_max.x < t_max.y and t_max.x < t_max.z:
 			cell.x += step.x
@@ -215,8 +224,13 @@ func to_dict() -> Dictionary:
 		"size_z": size_z,
 		"height": height,
 		"seed": world_seed,
+		"sea_level": sea_level,
+		"spawn_point": spawn_point,
 		"blocks_len": blocks.size(),
 		"blocks": blocks.compress(FileAccess.COMPRESSION_ZSTD),
+		# Высоты тоже сохраняем — пересчитывать их для большого мира долго.
+		"heightmap": heightmap.to_byte_array().compress(FileAccess.COMPRESSION_ZSTD),
+		"top_any": top_any.to_byte_array().compress(FileAccess.COMPRESSION_ZSTD),
 		"damage": damage,
 	}
 
@@ -230,6 +244,9 @@ func from_dict(d: Dictionary) -> String:
 		return "мир сохранён более новой версией игры"
 	setup(int(d["size_x"]), int(d["size_z"]), int(d["height"]))
 	world_seed = int(d.get("seed", 0))
+	sea_level = int(d.get("sea_level", 0))
+	var sp = d.get("spawn_point", Vector3.ZERO)
+	spawn_point = sp if sp is Vector3 else Vector3.ZERO
 	var packed: PackedByteArray = d["blocks"]
 	var raw := packed.decompress(int(d["blocks_len"]), FileAccess.COMPRESSION_ZSTD)
 	if raw.size() != size_x * size_z * height:
@@ -240,5 +257,20 @@ func from_dict(d: Dictionary) -> String:
 		for pos in dmg:
 			if pos is Vector3i:
 				damage[pos] = float(dmg[pos])
-	recompute_all_columns()
+	# Высоты: берём из файла (быстро), а в старых сохранениях — пересчитываем.
+	var columns := size_x * size_z
+	var hm := _unpack_ints(d.get("heightmap"), columns)
+	var ta := _unpack_ints(d.get("top_any"), columns)
+	if hm.size() == columns and ta.size() == columns:
+		heightmap = hm
+		top_any = ta
+	else:
+		recompute_all_columns()
 	return ""
+
+
+static func _unpack_ints(value, count: int) -> PackedInt32Array:
+	if not (value is PackedByteArray):
+		return PackedInt32Array()
+	var raw: PackedByteArray = value.decompress(count * 4, FileAccess.COMPRESSION_ZSTD)
+	return raw.to_int32_array()

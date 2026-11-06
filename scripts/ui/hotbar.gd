@@ -1,6 +1,6 @@
 class_name Hotbar
 extends Control
-## Панель быстрого доступа: 8 ячеек с блоками, одна выбрана.
+## Панель быстрого доступа: 9 ячеек с блоками, одна выбрана.
 ## Рисуется вручную в _draw() — так проще, чем собирать из кучи узлов.
 
 signal selection_changed(index: int)
@@ -10,7 +10,7 @@ const GAP := 6.0
 
 var items: Array[int] = [
 	Blocks.GRASS, Blocks.DIRT, Blocks.STONE, Blocks.COBBLESTONE,
-	Blocks.PLANKS, Blocks.WOOD, Blocks.LEAVES, Blocks.SAND,
+	Blocks.PLANKS, Blocks.WOOD, Blocks.LEAVES, Blocks.SAND, Blocks.GRAVEL,
 ]
 var selected := 0
 var atlas: Texture2D

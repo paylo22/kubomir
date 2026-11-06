@@ -197,6 +197,8 @@ func _world_row(meta: Dictionary) -> Control:
 	var details := "%s · зерно %s · %s" % [
 		_size_name(int(meta.get("size_chunks", 6))), str(meta.get("seed", "?")),
 		_format_date(int(meta.get("last_played", 0)))]
+	if meta.has("islands"):
+		details = "%s · островов: %d" % [details, int(meta["islands"])]
 	info.add_child(UITheme.label(details, 18, UITheme.TEXT_DIM))
 
 	var id: String = meta["id"]

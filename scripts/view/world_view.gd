@@ -3,9 +3,14 @@ extends Node3D
 ## Картинка мира: чанки, трещины на повреждённых блоках, осколки при разрушении.
 ## Сам мир (блоки) хранится в WorldData, а этот узел только показывает его.
 ## Когда сервер что-то меняет, он присылает событие — и мы перерисовываем нужное.
+##
+## Показываем не весь мир, а только чанки вокруг игрока (дальность прорисовки).
+## Игрок идёт — впереди чанки появляются, позади исчезают. Так даже большой
+## архипелаг не нагружает планшет.
 
 signal spawn_area_ready ## построены чанки вокруг точки появления — можно пускать игрока
 
+@export var view_distance := 6       ## дальность прорисовки в чанках (1 чанк = 16 блоков)
 @export var use_threads := true      ## строить сетку чанков в фоновых потоках
 @export var max_parallel_jobs := 0   ## сколько чанков строить одновременно (0 = по числу ядер)
 @export var snapshot_budget_ms := 4.0 ## сколько мс за кадр можно тратить на снимки чанков
@@ -16,17 +21,19 @@ var atlas: ImageTexture
 var atlas_image: Image
 var opaque_material: StandardMaterial3D
 var cutout_material: StandardMaterial3D # для листвы (с дырочками)
-var chunks := {} # Vector2i -> Chunk
-## Насколько построен мир при загрузке (0..1).
+var water_material: StandardMaterial3D  # полупрозрачная вода
+var chunks := {} # Vector2i -> Chunk (только те, что сейчас показаны)
+## Насколько построена область вокруг игрока при загрузке (0..1).
 var initial_progress := 0.0
 
+var _focus_chunk := Vector2i(-9999, -9999)
+var _loaded_distance := -1
 var _queue: Array[Vector2i] = [] # чанки, которые ждут перестройки
 var _queued := {}
 var _running := {}  # чанк -> задание, которое сейчас считается
 var _dirty := {}    # чанки, изменившиеся, пока их уже считали
-var _initial_pending := {}
-var _initial_total := 0
 var _spawn_waiting := {}
+var _spawn_total := 0
 var _spawn_emitted := false
 
 var _cracks := {} # Vector3i -> MeshInstance3D
@@ -42,6 +49,10 @@ func _ready() -> void:
 	atlas = ImageTexture.create_from_image(atlas_image)
 	opaque_material = _make_material(false)
 	cutout_material = _make_material(true)
+	water_material = _make_material(false)
+	water_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	water_material.albedo_color = Color(1, 1, 1, 0.78)
+	water_material.cull_mode = BaseMaterial3D.CULL_DISABLED # поверхность видно и из-под воды
 	_setup_cracks()
 	_setup_particles()
 
@@ -59,29 +70,81 @@ func _make_material(cutout: bool) -> StandardMaterial3D:
 	return m
 
 
-## Начать показывать мир. focus — откуда строить в первую очередь (где появится игрок).
+## Начать показывать мир. focus — где появится игрок: оттуда строим в первую очередь.
 func attach(world_data: WorldData, focus: Vector3) -> void:
 	data = world_data
-	var focus_chunk := Vector2i(floori(focus.x / WorldData.CHUNK_SIZE), floori(focus.z / WorldData.CHUNK_SIZE))
-	var order: Array[Vector2i] = []
-	for cz in data.chunk_count_z():
-		for cx in data.chunk_count_x():
-			var cp := Vector2i(cx, cz)
-			var chunk := Chunk.new(cp)
-			chunks[cp] = chunk
-			add_child(chunk)
-			order.append(cp)
-			_initial_pending[cp] = true
-			if absi(cx - focus_chunk.x) <= 1 and absi(cz - focus_chunk.y) <= 1:
+	var fc := _chunk_of(floori(focus.x), floori(focus.z))
+	for dz in range(-1, 2):
+		for dx in range(-1, 2):
+			var cp := fc + Vector2i(dx, dz)
+			if _in_world(cp):
 				_spawn_waiting[cp] = true
-	order.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
-		return a.distance_squared_to(focus_chunk) < b.distance_squared_to(focus_chunk))
-	for cp in order:
-		_enqueue(cp, false)
-	_initial_total = order.size()
+	_spawn_total = _spawn_waiting.size()
+	set_focus(focus)
 	# Трещины на блоках, повреждённых до сохранения
 	for pos in data.damage:
 		_update_crack(pos)
+
+
+## Игрок переместился: подгрузить чанки вокруг и убрать дальние.
+func set_focus(pos: Vector3) -> void:
+	if data == null:
+		return
+	var fc := _chunk_of(floori(pos.x), floori(pos.z))
+	if fc == _focus_chunk and view_distance == _loaded_distance:
+		return
+	_focus_chunk = fc
+	_loaded_distance = view_distance
+	var r := view_distance
+	# Убираем чанки, которые стали слишком далеко (с запасом в 1 чанк, чтобы не мигали на границе)
+	for cp in chunks.keys():
+		if _ring_distance(cp, fc) > r + 1:
+			_unload(cp)
+	# Добавляем недостающие, ближние — первыми
+	var missing: Array[Vector2i] = []
+	for dz in range(-r, r + 1):
+		for dx in range(-r, r + 1):
+			var cp := fc + Vector2i(dx, dz)
+			if not _in_world(cp) or chunks.has(cp):
+				continue
+			if _ring_distance(cp, fc) <= r:
+				missing.append(cp)
+	missing.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return a.distance_squared_to(fc) < b.distance_squared_to(fc))
+	for cp in missing:
+		var chunk := Chunk.new(cp)
+		chunks[cp] = chunk
+		add_child(chunk)
+		if _running.has(cp):
+			_dirty[cp] = true # старое задание ещё считается — после него посчитаем заново
+		else:
+			_enqueue(cp, false)
+	# Ближние чанки в очереди — вперёд (игрок мог развернуться)
+	_queue.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		return a.distance_squared_to(fc) < b.distance_squared_to(fc))
+
+
+## Сколько чанков сейчас показано (для строки информации).
+func loaded_count() -> int:
+	return chunks.size()
+
+
+func _ring_distance(a: Vector2i, b: Vector2i) -> float:
+	return Vector2(a - b).length()
+
+
+func _in_world(cp: Vector2i) -> bool:
+	return cp.x >= 0 and cp.y >= 0 and cp.x < data.chunk_count_x() and cp.y < data.chunk_count_z()
+
+
+func _unload(cp: Vector2i) -> void:
+	var chunk: Chunk = chunks[cp]
+	chunks.erase(cp)
+	chunk.queue_free()
+	if _queued.has(cp):
+		_queued.erase(cp)
+		_queue.erase(cp)
+	_dirty.erase(cp)
 
 
 # =============================================================================
@@ -102,7 +165,7 @@ func on_block_changed(pos: Vector3i, new_id: int, old_id: int) -> void:
 			var cp := _chunk_of(pos.x + dx, pos.z + dz)
 			if cp != own:
 				request_rebuild(cp, true)
-	if new_id == Blocks.AIR and old_id != Blocks.AIR:
+	if not Blocks.is_solid(new_id) and Blocks.is_solid(old_id):
 		_spawn_break_particles(pos, old_id)
 
 
@@ -121,7 +184,7 @@ func _chunk_of(x: int, z: int) -> Vector2i:
 
 func request_rebuild(cp: Vector2i, urgent: bool) -> void:
 	if not chunks.has(cp):
-		return
+		return # чанк сейчас не показан — построим, когда игрок подойдёт
 	if _running.has(cp):
 		_dirty[cp] = true # досчитаем текущее и сразу пересчитаем ещё раз
 		return
@@ -154,6 +217,9 @@ func _start_jobs() -> void:
 	while not _queue.is_empty() and _running.size() < limit:
 		var cp: Vector2i = _queue.pop_front()
 		_queued.erase(cp)
+		if _running.has(cp):
+			_dirty[cp] = true
+			continue
 		var job := ChunkMeshJob.snapshot(data, cp)
 		if use_threads:
 			job.task_id = WorkerThreadPool.add_task(job.run, false, "Сетка чанка")
@@ -175,6 +241,8 @@ func _collect_finished() -> void:
 			continue
 		WorkerThreadPool.wait_for_task_completion(job.task_id)
 		_running.erase(cp)
+		if not chunks.has(cp):
+			continue # пока считали, игрок ушёл далеко — чанк уже не нужен
 		_apply(job)
 		if _dirty.has(cp):
 			_dirty.erase(cp)
@@ -185,12 +253,10 @@ func _collect_finished() -> void:
 
 func _apply(job: ChunkMeshJob) -> void:
 	var cp := job.chunk_pos
-	chunks[cp].apply(job, opaque_material, cutout_material)
-	if _initial_pending.has(cp):
-		_initial_pending.erase(cp)
-		initial_progress = 1.0 - float(_initial_pending.size()) / maxi(1, _initial_total)
+	chunks[cp].apply(job, opaque_material, cutout_material, water_material)
 	if _spawn_waiting.has(cp):
 		_spawn_waiting.erase(cp)
+		initial_progress = 1.0 - float(_spawn_waiting.size()) / maxi(1, _spawn_total)
 		if _spawn_waiting.is_empty() and not _spawn_emitted:
 			_spawn_emitted = true
 			spawn_area_ready.emit()

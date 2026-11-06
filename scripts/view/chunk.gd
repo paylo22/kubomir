@@ -17,7 +17,7 @@ func _init(cp: Vector2i) -> void:
 
 
 ## Показать результат задания (вызывается в основном потоке).
-func apply(job: ChunkMeshJob, opaque_material: Material, cutout_material: Material) -> void:
+func apply(job: ChunkMeshJob, opaque_material: Material, cutout_material: Material, water_material: Material) -> void:
 	var mesh := ArrayMesh.new()
 	if not job.opaque_arrays.is_empty():
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, job.opaque_arrays)
@@ -25,6 +25,9 @@ func apply(job: ChunkMeshJob, opaque_material: Material, cutout_material: Materi
 	if not job.cutout_arrays.is_empty():
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, job.cutout_arrays)
 		mesh.surface_set_material(mesh.get_surface_count() - 1, cutout_material)
+	if not job.water_arrays.is_empty():
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, job.water_arrays)
+		mesh.surface_set_material(mesh.get_surface_count() - 1, water_material)
 	_mesh_instance.mesh = mesh
 	if job.collision_faces.is_empty():
 		_collision.shape = null

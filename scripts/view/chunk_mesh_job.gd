@@ -37,6 +37,8 @@ const FACE_SHADE: Array[float] = [0.80, 0.80, 1.0, 0.55, 0.90, 0.90]
 # Затенение в углах (ambient occlusion): много соседей у угла → темнее
 const AO_CURVE: Array[float] = [0.55, 0.70, 0.85, 1.0]
 const SHADOW_LIGHT := 0.45 # яркость там, куда не достаёт небо (пещеры, под навесом)
+const WATER_DROP := 0.12   # поверхность воды чуть ниже края блока — так красивее
+const WATER_DARKEN := 0.06 # насколько темнеет дно с каждым блоком глубины
 
 # Для каждого угла каждой грани — три соседа, которые затеняют этот угол.
 static var AO_OFFSETS := _build_ao_offsets()
@@ -52,11 +54,13 @@ var task_id := -1
 # --- Результат ---
 var opaque_arrays := []   # массивы для непрозрачных блоков (пусто, если граней нет)
 var cutout_arrays := []   # для листвы
+var water_arrays := []    # для воды (прозрачная, без коллизии)
 var collision_faces := PackedVector3Array() # треугольники для физики
 
 # Рабочие переменные
 var _ph := 0 # высота столбца в снимке (высота мира + 2)
 var _ao_delta := PackedInt32Array()
+var _face_delta := PackedInt32Array() # сдвиг до соседа по каждой из 6 граней
 
 
 ## Снимок блоков чанка. Вызывать в основном потоке (быстро: ~1–3 мс).
@@ -66,8 +70,12 @@ static func snapshot(data: WorldData, cp: Vector2i) -> ChunkMeshJob:
 	job.height = data.height
 	var h := data.height
 	var ph := h + 2
+	# За краем мира: до уровня моря — вода (чтобы океан не обрывался «стеклянной стеной»), выше — воздух
 	var empty_column := PackedByteArray()
 	empty_column.resize(ph)
+	for y in range(0, mini(data.sea_level, h - 1) + 1):
+		if data.sea_level > 0:
+			empty_column[y + 1] = Blocks.WATER
 	var below := PackedByteArray([Blocks.STONE]) # под миром «камень» — низ мира не рисуем
 	var above := PackedByteArray([Blocks.AIR])
 	var snap_ids := PackedByteArray()
@@ -92,7 +100,7 @@ static func snapshot(data: WorldData, cp: Vector2i) -> ChunkMeshJob:
 				snap_sky[ci] = data.heightmap[col]
 				snap_tops[ci] = data.top_any[col]
 			else:
-				snap_ids.append_array(empty_column) # за краем мира — воздух
+				snap_ids.append_array(empty_column)
 				snap_sky[ci] = -1
 				snap_tops[ci] = -1
 	job.ids = snap_ids
@@ -112,9 +120,13 @@ func run() -> void:
 				var o: Vector3i = AO_OFFSETS[fi][c][k]
 				_ao_delta[fi * 12 + c * 3 + k] = o.y + o.x * _ph + o.z * zs
 
+	_face_delta = PackedInt32Array([_ph, -_ph, 1, -1, zs, -zs])
+
 	var tlut := Blocks.TRANSPARENT_LUT
+	var water_id := Blocks.WATER
 	var opaque := MeshData.new()
 	var cutout := MeshData.new()
+	var water := MeshData.new()
 	for pz in range(1, PW - 1):
 		for px in range(1, PW - 1):
 			var ci := px + pz * PW
@@ -124,25 +136,37 @@ func run() -> void:
 				var id := ids[i]
 				if id == Blocks.AIR:
 					continue
+				if id == water_id:
+					# Вода: рисуем только границу с воздухом (и листвой). Вода с водой не рисуется,
+					# а грани дна рисует сам блок дна. Если сверху не вода — поверхность чуть ниже.
+					var lower := ids[i + 1] != water_id
+					for fi in 6:
+						var nb := ids[i + _face_delta[fi]]
+						if nb != water_id and tlut[nb] == 1:
+							_add_face(water, i, ci, px - 1, y, pz - 1, fi, id, lower)
+					continue
 				var md := cutout if tlut[id] == 1 else opaque
 				# Грань рисуем, только если сосед с той стороны прозрачный
-				if tlut[ids[i + _ph]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 0, id)
-				if tlut[ids[i - _ph]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 1, id)
-				if tlut[ids[i + 1]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 2, id)
-				if tlut[ids[i - 1]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 3, id)
-				if tlut[ids[i + zs]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 4, id)
-				if tlut[ids[i - zs]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 5, id)
+				if tlut[ids[i + _ph]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 0, id, false)
+				if tlut[ids[i - _ph]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 1, id, false)
+				if tlut[ids[i + 1]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 2, id, false)
+				if tlut[ids[i - 1]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 3, id, false)
+				if tlut[ids[i + zs]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 4, id, false)
+				if tlut[ids[i - zs]] == 1: _add_face(md, i, ci, px - 1, y, pz - 1, 5, id, false)
 
+	# Коллизия — только у твёрдых блоков (сквозь воду можно плыть)
 	if not opaque.is_empty():
 		opaque_arrays = opaque.to_arrays()
 		opaque.append_triangles(collision_faces)
 	if not cutout.is_empty():
 		cutout_arrays = cutout.to_arrays()
 		cutout.append_triangles(collision_faces)
+	if not water.is_empty():
+		water_arrays = water.to_arrays()
 	ids = PackedByteArray() # снимок больше не нужен — освобождаем память
 
 
-func _add_face(md: MeshData, i: int, ci: int, lx: int, y: int, lz: int, fi: int, id: int) -> void:
+func _add_face(md: MeshData, i: int, ci: int, lx: int, y: int, lz: int, fi: int, id: int, lower_top: bool) -> void:
 	var n := NORMALS[fi]
 	var corners: Array = CORNERS[fi]
 	var tlut := Blocks.TRANSPARENT_LUT
@@ -156,8 +180,13 @@ func _add_face(md: MeshData, i: int, ci: int, lx: int, y: int, lz: int, fi: int,
 
 	# Видно ли небо из клетки перед гранью? Если нет — грань в тени.
 	var light := FACE_SHADE[fi]
-	if y + n.y <= sky[ci + n.x + n.z * PW]:
+	var nci := ci + n.x + n.z * PW # столбец клетки перед гранью
+	if y + n.y <= sky[nci]:
 		light *= SHADOW_LIGHT
+	# Под водой: чем глубже, тем темнее (вода «съедает» свет)
+	if id != Blocks.WATER and ids[i + _face_delta[fi]] == Blocks.WATER:
+		var depth := tops[nci] - (y + n.y)
+		light *= clampf(1.0 - depth * WATER_DARKEN, 0.35, 1.0)
 
 	# Затенение каждого из 4 углов
 	var d := fi * 12
@@ -169,10 +198,11 @@ func _add_face(md: MeshData, i: int, ci: int, lx: int, y: int, lz: int, fi: int,
 	var start := md.verts.size()
 	var normal := Vector3(n)
 	var p := Vector3(lx, y, lz)
-	md.verts.append(p + Vector3(corners[0]))
-	md.verts.append(p + Vector3(corners[1]))
-	md.verts.append(p + Vector3(corners[2]))
-	md.verts.append(p + Vector3(corners[3]))
+	for c in 4:
+		var v := p + Vector3(corners[c])
+		if lower_top and corners[c].y == 1:
+			v.y -= WATER_DROP
+		md.verts.append(v)
 	md.normals.append(normal)
 	md.normals.append(normal)
 	md.normals.append(normal)

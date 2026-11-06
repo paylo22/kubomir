@@ -7,6 +7,7 @@ var hotbar: Hotbar
 var touch_controls: TouchControls # null, если сенсорного экрана нет
 
 var _info: Label
+var _underwater: ColorRect
 var _block_name: Label
 var _toast: Label
 var _loading: ColorRect
@@ -18,6 +19,14 @@ var _toast_timer := 0.0
 
 
 func setup(atlas: Texture2D) -> void:
+	# --- Синяя пелена под водой (рисуется первой — под всеми кнопками) ---
+	_underwater = ColorRect.new()
+	_underwater.color = Color(0.08, 0.28, 0.55, 0.28)
+	_underwater.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_underwater.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_underwater.visible = false
+	add_child(_underwater)
+
 	# --- Прицел в центре экрана ---
 	var crosshair := Control.new()
 	crosshair.set_anchors_preset(Control.PRESET_CENTER)
@@ -135,6 +144,10 @@ func hide_loading() -> void:
 	_loading.visible = false
 
 
+func set_underwater(value: bool) -> void:
+	_underwater.visible = value
+
+
 func set_flying(value: bool) -> void:
 	_flying = value
 	if touch_controls:
@@ -165,13 +178,14 @@ func _process(delta: float) -> void:
 			_toast.visible = false
 
 
-func update_info(player: Node3D) -> void:
+func update_info(player: Node3D, chunks_shown: int) -> void:
 	var text := ""
 	if Game.settings["show_fps"]:
 		var p := player.global_position
-		text = "FPS: %d   X %d  Y %d  Z %d" % [Engine.get_frames_per_second(), floori(p.x), floori(p.y), floori(p.z)]
+		text = "FPS: %d   X %d  Y %d  Z %d   чанков: %d" % [Engine.get_frames_per_second(),
+			floori(p.x), floori(p.y), floori(p.z), chunks_shown]
 	if _flying:
 		text += "   [Полёт]"
 	if not touch_enabled:
-		text += "\nЛКМ — ломать (держать), ПКМ — ставить, 1–8 / колёсико — блок, F — полёт, Shift — вниз, Esc — меню"
+		text += "\nЛКМ — ломать (держать), ПКМ — ставить, 1–9 / колёсико — блок, F — полёт, Shift — вниз, Esc — меню"
 	_info.text = text

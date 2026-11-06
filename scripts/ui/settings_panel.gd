@@ -5,23 +5,22 @@ extends PanelContainer
 
 signal closed
 
-var _touch_value: Label
-var _mouse_value: Label
 var _auto_jump: Button
 var _show_fps: Button
 
 
 func _ready() -> void:
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 14)
+	box.add_theme_constant_override("separation", 10)
 	add_child(box)
 
 	var title := UITheme.label("Настройки", 34)
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(title)
 
-	_touch_value = _add_slider(box, "Чувствительность камеры (палец)", "touch_sensitivity")
-	_mouse_value = _add_slider(box, "Чувствительность мыши", "mouse_sensitivity")
+	_add_slider(box, "Дальность прорисовки (чанков)", "view_distance", 3, 12, 1, "%d")
+	_add_slider(box, "Чувствительность камеры (палец)", "touch_sensitivity", 0.2, 3.0, 0.1, "×%.1f")
+	_add_slider(box, "Чувствительность мыши", "mouse_sensitivity", 0.2, 3.0, 0.1, "×%.1f")
 
 	_auto_jump = UITheme.button("", _toggle.bind("auto_jump"), 520)
 	_auto_jump.toggle_mode = true
@@ -35,7 +34,8 @@ func _ready() -> void:
 	box.add_child(back)
 
 
-func _add_slider(box: VBoxContainer, title: String, key: String) -> Label:
+func _add_slider(box: VBoxContainer, title: String, key: String,
+		min_value: float, max_value: float, step: float, fmt: String) -> void:
 	var row := HBoxContainer.new()
 	box.add_child(row)
 	var name_label := UITheme.label(title, 22, UITheme.TEXT_DIM)
@@ -45,17 +45,25 @@ func _add_slider(box: VBoxContainer, title: String, key: String) -> Label:
 	row.add_child(value_label)
 
 	var slider := HSlider.new()
-	slider.min_value = 0.2
-	slider.max_value = 3.0
-	slider.step = 0.1
+	slider.min_value = min_value
+	slider.max_value = max_value
+	slider.step = step
 	slider.custom_minimum_size = Vector2(520, 44)
 	slider.value = float(Game.settings[key])
-	value_label.text = "×%.1f" % slider.value
+	var is_int := step >= 1.0
+	var update_text := func(v: float) -> void:
+		if is_int:
+			value_label.text = fmt % int(v)
+		else:
+			value_label.text = fmt % v
+	update_text.call(slider.value)
 	slider.value_changed.connect(func(v: float) -> void:
-		Game.settings[key] = v
-		value_label.text = "×%.1f" % v)
+		if is_int:
+			Game.settings[key] = int(v)
+		else:
+			Game.settings[key] = v
+		update_text.call(v))
 	box.add_child(slider)
-	return value_label
 
 
 func _toggle(key: String) -> void:

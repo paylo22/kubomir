@@ -11,6 +11,9 @@ extends CharacterBody3D
 @export var fly_speed := 10.0
 @export var jump_velocity := 8.0
 @export var gravity := 24.0
+@export var swim_speed_factor := 0.55 ## во сколько раз медленнее двигаемся в воде
+@export var swim_up_speed := 3.5      ## скорость всплытия, если держать «Прыжок»
+@export var sink_speed := 1.2         ## скорость, с которой медленно тонем
 
 @export_group("Камера")
 @export var mouse_sensitivity := 0.0025 ## умножается на настройку из меню
@@ -28,6 +31,7 @@ var world: WorldView
 var hud: Node       # HUD (scripts/ui/hud.gd)
 
 var flying := false
+var in_water := false
 var _active := false # включается, когда мир вокруг построен
 var _target := {}    # блок, на который смотрим
 var _highlight: MeshInstance3D
@@ -83,10 +87,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				if event.pressed:
 					hud.hotbar.select(hud.hotbar.selected + 1)
 
-	# Выбор блока цифрами 1–8
+	# Выбор блока цифрами 1–9
 	if event is InputEventKey and event.pressed and not event.echo:
 		var k: int = event.physical_keycode
-		if k >= KEY_1 and k <= KEY_8:
+		if k >= KEY_1 and k <= KEY_9:
 			hud.hotbar.select(k - KEY_1)
 
 
@@ -132,6 +136,7 @@ func _physics_process(delta: float) -> void:
 			move_input = stick
 	var dir := transform.basis * Vector3(move_input.x, 0, move_input.y)
 
+	in_water = _check_in_water()
 	if flying:
 		var vertical := 0.0
 		if Input.is_action_pressed("jump"):
@@ -139,6 +144,8 @@ func _physics_process(delta: float) -> void:
 		if Input.is_action_pressed("fly_down"):
 			vertical -= 1.0
 		velocity = dir * fly_speed + Vector3(0, vertical * fly_speed * 0.8, 0)
+	elif in_water:
+		_swim(delta, dir)
 	else:
 		velocity.y = maxf(velocity.y - gravity * delta, -50.0)
 		if is_on_floor():
@@ -162,11 +169,45 @@ func _physics_process(delta: float) -> void:
 	})
 	_update_target()
 	_handle_blocks(delta)
-	hud.update_info(self)
+	hud.update_info(self, world.loaded_count())
 
 
 func _auto_jump_enabled() -> bool:
 	return hud.touch_controls != null and bool(Game.settings["auto_jump"])
+
+
+## Плавание: медленно тонем, «Прыжок» — вверх, «Вниз» — нырнуть.
+func _swim(delta: float, dir: Vector3) -> void:
+	if velocity.y < -4.0:
+		velocity.y = lerpf(velocity.y, -4.0, 0.25) # вода тормозит падение — «плюх»
+	var target_vy := -sink_speed
+	if Input.is_action_pressed("jump"):
+		target_vy = swim_up_speed
+	elif Input.is_action_pressed("fly_down"):
+		target_vy = -swim_up_speed
+	velocity.y = move_toward(velocity.y, target_vy, 14.0 * delta)
+	# Упёрлись в берег — выбираемся (сами, если включён автопрыжок)
+	if is_on_wall() and dir.length() > 0.1 and (Input.is_action_pressed("jump") or _auto_jump_enabled()):
+		velocity.y = maxf(velocity.y, 5.5)
+	var target := dir * walk_speed * swim_speed_factor
+	velocity.x = lerpf(velocity.x, target.x, clampf(6.0 * delta, 0, 1))
+	velocity.z = lerpf(velocity.z, target.z, clampf(6.0 * delta, 0, 1))
+
+
+## В воде ли мы: вода у ног или у пояса.
+func _check_in_water() -> bool:
+	var data := world.data
+	var p := global_position
+	var x := floori(p.x)
+	var z := floori(p.z)
+	return data.get_block(x, floori(p.y + 0.2), z) == Blocks.WATER \
+		or data.get_block(x, floori(p.y + 1.0), z) == Blocks.WATER
+
+
+## Голова под водой? (для синего тумана)
+func is_head_underwater() -> bool:
+	var c := camera.global_position
+	return world.data.get_block(floori(c.x), floori(c.y), floori(c.z)) == Blocks.WATER
 
 
 ## Есть ли впереди ступенька высотой в один блок, на которую можно запрыгнуть?
